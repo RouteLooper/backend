@@ -1,2 +1,3 @@
 /route-gen/cache
 .idea
+/route-gen/__pycache__
