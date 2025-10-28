@@ -1,3 +1,5 @@
-/route-gen/cache
-.idea
-/route-gen/__pycache__
+cache/
+data/
+.idea/
+__pycache__/
+generated_gpx/
