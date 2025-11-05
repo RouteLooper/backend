@@ -10,7 +10,7 @@ client = Valhalla(base_url="http://localhost:8002")
 coord_a = [-2.105674, 51.915820]
 coord_b = [-2.056077, 51.907495]
 
-profile = "bicycle"
+profile = "auto"
 
 
 def get_isochrone(center):

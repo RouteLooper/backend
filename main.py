@@ -24,22 +24,22 @@ os.makedirs(gpx_dir, exist_ok=True)
 app.mount("/gpx", StaticFiles(directory=gpx_dir), name="gpx")
 
 # --- Data Models ---
-LatLon = Tuple[float, float]
-LatLonEle = Tuple[float, float, float]
+LonLat = Tuple[float, float]
+LonLatEle = Tuple[float, float, float]
 
 
 class RouteRequest(BaseModel):
-    start_end_lat_lon: LatLon = Field(..., description="Start and end coordinate of looped route (lat, lon)")
-    waypoints: Optional[List[LatLon]] = Field(default_factory=list, description="List of waypoints (lat, lon, ele)")
-    target_distance_km: float = Field(..., gt=0, description="Target distance in kilometers")
+    start_end_lon_lat: LonLat = Field(..., description="Start and end coordinate of looped route (lon, lat)")
+    waypoints: Optional[List[LonLat]] = Field(default_factory=list, description="List of waypoints (lon, lat)")
+    target_distance_m: float = Field(..., gt=0, description="Target distance in meters")
     target_elevation_m: float = Field(..., ge=0, description="Target total uphill elevation in meters")
-    min_out_and_back_frac: float = Field(0.15, ge=0.0, le=1.0,
-                                         description="Minimum fractional length for out-and-back sections")
-    network_type: Literal["walk", "bike", "drive"] = Field("walk", description="Network type: walk, bike, or drive")
+    profile: Literal[
+        "auto", "bicycle", "bus", "bikeshare", "truck", "taxi", "motor_scooter", "motorcycle", "multimodal", "pedestrian"] = Field(
+        "pedestrian", description="Network type: walk, bike, or drive...")
 
 
 class RouteResponse(BaseModel):
-    route: List[LatLonEle]
+    route: List[LonLatEle]
     distance_km: float
     elevation_m: float
     google_maps_url: str
@@ -51,24 +51,18 @@ class RouteResponse(BaseModel):
 @app.post("/generate-route", response_model=RouteResponse)
 def generate_route_endpoint(req: RouteRequest):
     """
-    Generate a looped route starting/ending at start_end_lat_lon, optionally passing waypoints,
+    Generate a looped route starting/ending at start_end_lon_lat, optionally passing waypoints,
     aiming for target_distance_km and target_elevation_m, using network_type graph.
     """
-    # Basic validation
-    if req.min_out_and_back_frac < 0 or req.min_out_and_back_frac > 1:
-        raise HTTPException(status_code=400, detail="min_out_and_back_frac must be between 0 and 1")
 
     # Run the route generator
     try:
         result = generate_route_api(
-            start_end_lat_lon=req.start_end_lat_lon,
+            start_end_lon_lat=req.start_end_lon_lat,
             waypoints=req.waypoints,
-            target_distance_km=req.target_distance_km,
+            target_distance_m=req.target_distance_m,
             target_elevation_m=req.target_elevation_m,
-            min_out_and_back_frac=req.min_out_and_back_frac,
-            network_type=req.network_type,
-            radius_km=req.target_distance_km/2,
-            max_iterations=10,
+            profile=req.profile,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Route generation failed: {e}")
