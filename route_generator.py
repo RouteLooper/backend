@@ -1,3 +1,4 @@
+import time
 import os
 from typing import List, Tuple, Dict, Any
 from network.graph_loader import load_graph
@@ -53,13 +54,22 @@ def generate_route_api(
         metadata: dict (extra details)
     """
 
-    # --- Step 1: Load OSM graph based on inputs ---
+    timings = {}
+
+    # --- Step 1: Load OSM graph ---
+    t0 = time.perf_counter()
     G = load_graph(start_end_lat_lon, radius_km, network_type=network_type)
+    timings["load_graph"] = time.perf_counter() - t0
+    print(f"[TIMER] load_graph took {timings['load_graph']:.2f} seconds")
 
     # --- Step 2: Generate initial route ---
+    t0 = time.perf_counter()
     full_route_nodes, generated_waypoints, total_length_km = generate_route(G, start_end_lat_lon, target_distance_km)
+    timings["generate_route"] = time.perf_counter() - t0
+    print(f"[TIMER] generate_route took {timings['generate_route']:.2f} seconds")
 
-    # --- Step 3: Post-process (remove out-and-back segments) ---
+    # --- Step 3: Clean route ---
+    t0 = time.perf_counter()
     full_route_nodes, total_length_km = iteratively_clean(
         G,
         full_route_nodes,
@@ -67,35 +77,51 @@ def generate_route_api(
         target_distance_km,
         max_iterations
     )
+    timings["iteratively_clean"] = time.perf_counter() - t0
+    print(f"[TIMER] iteratively_clean took {timings['iteratively_clean']:.2f} seconds")
 
-    # --- Step 4: Optionally plot (for debug only) ---
-    # plot_route(G, full_route_nodes)
 
-    # --- Step 5: Google Maps link ---
+    # --- Step 5: Generate Google Maps URL ---
+    t0 = time.perf_counter()
     route_url = generate_gmaps_route_url(G, generated_waypoints, mode=network_type)
+    timings["generate_gmaps_route_url"] = time.perf_counter() - t0
+    print(f"[TIMER] generate_gmaps_route_url took {timings['generate_gmaps_route_url']:.2f} seconds")
 
-    # --- Step 6: Add Route Coordinates and Elevation ---
+    # --- Step 6: Add detailed coordinates and elevation ---
+    t0 = time.perf_counter()
     route_coords = get_detailed_route_coords(G, full_route_nodes)
+    timings["get_detailed_route_coords"] = time.perf_counter() - t0
+    print(f"[TIMER] get_detailed_route_coords took {timings['get_detailed_route_coords']:.2f} seconds")
+
+    t0 = time.perf_counter()
     print("[INFO] Adding elevation data to route points (batched)...")
     route_with_elev = add_elevations_to_coords(route_coords)
+    timings["add_elevations_to_coords"] = time.perf_counter() - t0
+    print(f"[TIMER] add_elevations_to_coords took {timings['add_elevations_to_coords']:.2f} seconds")
 
+    # --- Step 7: Create GPX file ---
+    t0 = time.perf_counter()
     gpx_path = create_gpx_file(route_with_elev)
     gpx_file_url = f"/gpx/{os.path.basename(gpx_path)}"
+    timings["create_gpx_file"] = time.perf_counter() - t0
+    print(f"[TIMER] create_gpx_file took {timings['create_gpx_file']:.2f} seconds")
 
-    # --- Step 7: Prepare return payload ---
+    # --- Step 8: Prepare result ---
     result = {
         "route": route_with_elev,
         "distance_km": total_length_km,
-        "elevation_m": target_elevation_m,  # If your algorithm supports elevation, replace this
+        "elevation_m": target_elevation_m,  # Replace if elevation model is active
         "google_maps_url": route_url,
         "gpx_file_url": gpx_file_url,
         "metadata": {
             "num_waypoints": len(generated_waypoints),
             "network_type": network_type,
             "radius_km": radius_km,
+            "total_runtime_sec": sum(timings.values())
         }
     }
 
+    print(f"[TIMER SUMMARY] Total runtime: {result['metadata']['total_runtime_sec']:.2f} seconds")
     return result
 
 

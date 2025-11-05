@@ -25,11 +25,12 @@ app.mount("/gpx", StaticFiles(directory=gpx_dir), name="gpx")
 
 # --- Data Models ---
 LatLon = Tuple[float, float]
+LatLonEle = Tuple[float, float, float]
 
 
 class RouteRequest(BaseModel):
     start_end_lat_lon: LatLon = Field(..., description="Start and end coordinate of looped route (lat, lon)")
-    waypoints: Optional[List[LatLon]] = Field(default_factory=list, description="List of waypoints (lat, lon)")
+    waypoints: Optional[List[LatLon]] = Field(default_factory=list, description="List of waypoints (lat, lon, ele)")
     target_distance_km: float = Field(..., gt=0, description="Target distance in kilometers")
     target_elevation_m: float = Field(..., ge=0, description="Target total uphill elevation in meters")
     min_out_and_back_frac: float = Field(0.15, ge=0.0, le=1.0,
@@ -38,7 +39,7 @@ class RouteRequest(BaseModel):
 
 
 class RouteResponse(BaseModel):
-    route: List[LatLon]
+    route: List[LatLonEle]
     distance_km: float
     elevation_m: float
     google_maps_url: str
