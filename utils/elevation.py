@@ -57,7 +57,7 @@ def _get_elevation_from_tile(src, lat: float, lon: float) -> float:
 
 
 def add_elevations_to_coords(coords: List[Tuple[float, float]]) -> List[Tuple[float, float, float]]:
-    """Add elevation data to a list of (lat, lon) coordinates using Copernicus GLO-30."""
+    """Add elevation osm to a list of (lat, lon) coordinates using Copernicus GLO-30."""
     results = []
     for lat, lon in coords:
         lat_base = math.floor(lat) if lat >= 0 else math.ceil(lat) - 1

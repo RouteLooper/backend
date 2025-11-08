@@ -22,3 +22,26 @@ uvicorn main:app --reload
   "target_elevation_m": 200,
   "profile": "bicycle" # Any of: auto, bicycle, bus, bikeshare, truck, taxi, motor_scooter, motorcycle, multimodal, pedestrian
 }
+
+
+
+# Graphhopper self-host instructions
+
+## Start the container
+docker run -it --rm `
+  -v "${PWD}/config.yml:/data/config.yml" `
+  -v "${PWD}/osm:/data/osm" `
+  -v "${PWD}/graph-cache:/data/graph-cache" `
+  -v "${PWD}/custom_models:/data/custom_models" `
+  -e JAVA_OPTS="-Xmx8g -Xms8g" `
+  -p 8989:8989 `
+  israelhikingmap/graphhopper:latest `
+  -c /data/config.yml -i /data/osm/gloucestershire-251104.osm.pbf -o /data/graph-cache
+
+
+config.yml has to be perfect for it to work
+check hosting: 
+  0.0.0.0 - local network
+ localhost - within container
+
+spt command: http://localhost:8989/spt?profile=car&point=51.8940,-2.0786&distance_limit=30000
