@@ -2,5 +2,5 @@ cache/
 data/
 .idea/
 __pycache__/
-generated_gpx/
+gpx/
 graphhopper-local/

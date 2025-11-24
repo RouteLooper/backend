@@ -1,113 +1,74 @@
 from typing import List, Tuple
 
+graphhopper_to_gmaps = {
+    "car": "driving",
+    "bike": "bicycling",
+    "foot": "walking",
+}
+
 
 def generate_gmaps_route_url(
-        route_coords: List[Tuple[float, float]],
-        waypoints: List[Tuple[float, float]] = None,
-        mode: str = "auto"
+        user_waypoints: List[Tuple[float, float]],
+        route_coords: List[Tuple[float, float, float]],
+        profile: str,
 ) -> str:
-    """
-    Generate a Google Maps Directions URL approximating the Valhalla route.
+    if profile not in graphhopper_to_gmaps:
+        raise ValueError(f"Unsupported profile '{profile}'")
 
-    Parameters
-    ----------
-    route_coords : list of (lat, lon)
-        Ordered coordinates from Valhalla route.
-    waypoints : list of (lat, lon), optional
-        User-specified waypoints (used to detect case 2).
-    mode : str
-        One of Valhalla profiles:
-        {'auto', 'bicycle', 'bus', 'bikeshare', 'truck', 'taxi',
-         'motor_scooter', 'motorcycle', 'multimodal', 'pedestrian'}
+    gmaps_mode = graphhopper_to_gmaps[profile]
+    max_waypoints = 10
+    max_intermediate = max_waypoints - 2  # exclude origin & destination
 
-    Returns
-    -------
-    str : Google Maps Directions URL
-    """
+    route_latlon = [(lat, lon) for lat, lon, _ in route_coords]
 
-    valhalla_to_gmaps = {
-        "auto": "driving",
-        "truck": "driving",
-        "taxi": "driving",
-        "bus": "driving",  # Google Maps driving covers road-based modes
-        "motor_scooter": "driving",
-        "motorcycle": "driving",
-        "bicycle": "bicycling",
-        "bikeshare": "bicycling",
-        "pedestrian": "walking",
-        "multimodal": "driving",  # fallback
-    }
+    origin = f"{user_waypoints[0][0]},{user_waypoints[0][1]}"
+    destination = f"{user_waypoints[-1][0]},{user_waypoints[-1][1]}"
 
-    # Normalize mode
-    mode = mode.lower()
-    gmaps_mode = valhalla_to_gmaps.get(mode, "driving")
+    # List of segments between user waypoints
+    segments: List[List[Tuple[float, float]]] = []
 
-    # Normalize
-    waypoints = waypoints or []
+    for i in range(len(user_waypoints) - 1):
+        start_wp = user_waypoints[i]
+        end_wp = user_waypoints[i + 1]
 
-    # Google Maps limits
-    MAX_TOTAL_POINTS = 10  # origin + destination + 8 waypoints
-    MAX_WAYPOINTS = MAX_TOTAL_POINTS - 2
+        start_idx = min(range(len(route_latlon)),
+                        key=lambda j: (route_latlon[j][0] - start_wp[0]) ** 2 + (route_latlon[j][1] - start_wp[1]) ** 2)
+        end_idx = min(range(start_idx, len(route_latlon)),
+                      key=lambda j: (route_latlon[j][0] - end_wp[0]) ** 2 + (route_latlon[j][1] - end_wp[1]) ** 2)
 
-    # ------------------------------------------------------------
-    # CASE 1: No user waypoints (use Valhalla coordinates directly)
-    # ------------------------------------------------------------
-    if len(waypoints) == 0:
-        if len(route_coords) <= MAX_TOTAL_POINTS:
-            gmaps_points = route_coords
-        else:
-            # Downsample evenly
-            step = max(1, len(route_coords) // MAX_TOTAL_POINTS)
-            gmaps_points = route_coords[::step]
-            if gmaps_points[-1] != route_coords[-1]:
-                gmaps_points.append(route_coords[-1])
+        # Exclude endpoints
+        segment_points = route_latlon[start_idx + 1:end_idx]
+        segments.append(segment_points)
 
-    # ------------------------------------------------------------
-    # CASE 2: User-provided waypoints
-    # ------------------------------------------------------------
-    else:
-        user_wps = waypoints
-        n_user = len(user_wps)
+    # How many intermediate user waypoints exist?
+    user_intermediates = user_waypoints[1:-1]
+    remaining_slots = max_intermediate - len(user_intermediates)
 
-        # If too many user waypoints, subsample evenly to fit limit
-        if n_user > MAX_WAYPOINTS:
-            step = max(1, n_user // MAX_WAYPOINTS)
-            sampled_user_wps = user_wps[::step]
-            # Ensure last one included
-            if sampled_user_wps[-1] != user_wps[-1]:
-                sampled_user_wps.append(user_wps[-1])
-            user_wps = sampled_user_wps
+    # Sample points proportionally from each segment
+    sampled_points: List[Tuple[float, float]] = []
+    total_points_available = sum(len(seg) for seg in segments)
+    if remaining_slots > 0 and total_points_available > 0:
+        for seg in segments:
+            if not seg:
+                continue
+            n_points = max(1, round(len(seg) / total_points_available * remaining_slots))
+            n_points = min(n_points, len(seg))
+            # Evenly spaced indices
+            indices = [int(i * len(seg) / n_points) for i in range(n_points)]
+            sampled_points.append([seg[idx] for idx in indices])
 
-        # Now merge with route geometry (for shape fidelity)
-        total_pts = len(route_coords)
-        if total_pts <= MAX_TOTAL_POINTS:
-            gmaps_points = route_coords
-        else:
-            n_middle = MAX_WAYPOINTS
-            step = max(1, total_pts // (n_middle + 1))
-            shape_points = route_coords[step:step * n_middle:step]
-            gmaps_points = [route_coords[0]] + shape_points + [route_coords[-1]]
+    # Build intermediate waypoints in correct order
+    intermediate_waypoints: List[Tuple[float, float]] = []
+    for i in range(len(user_waypoints) - 1):
+        # Add user-defined intermediate waypoint if it exists
+        if 0 < i < len(user_waypoints) - 1:
+            intermediate_waypoints.append(user_waypoints[i])
+        # Add sampled points for this segment
+        if sampled_points and i < len(sampled_points):
+            intermediate_waypoints.extend(sampled_points[i])
 
-        # Replace some of the middle shape points with user waypoints,
-        # evenly distributed across available slots
-        if len(user_wps) > 0:
-            slots = min(MAX_WAYPOINTS, len(user_wps))
-            indices = [round(i * (len(gmaps_points) - 2) / (slots + 1)) + 1 for i in range(slots)]
-            for idx, wp in zip(indices, user_wps):
-                if 0 < idx < len(gmaps_points) - 1:
-                    gmaps_points[idx] = wp
-
-    # ------------------------------------------------------------
-    # Compose URL
-    # ------------------------------------------------------------
-    origin = f"{gmaps_points[0][0]},{gmaps_points[0][1]}"
-    destination = f"{gmaps_points[-1][0]},{gmaps_points[-1][1]}"
-    middle_points = gmaps_points[1:-1]
-
-    waypoints_param = ""
-    if middle_points:
-        waypoints_strs = [f"{lat},{lon}" for lat, lon in middle_points]
-        waypoints_param = "|".join(waypoints_strs)
+    # Format for Google Maps
+    waypoints_param = "|".join(f"{lat},{lon}" for lat, lon in intermediate_waypoints)
 
     url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}"
     if waypoints_param:

@@ -1,207 +1,238 @@
 import random
-from routingpy import Valhalla
-from shapely.geometry import Polygon, MultiPoint, Point
-from shapely.ops import nearest_points
-import math
-import os
-from typing import List, Tuple, Dict, Any
+import pandas as pd
+from typing import Tuple, Optional, Dict, Any, List
+
+from utils.graphhopper_api import fetch_graphhopper_spt, fetch_graphhopper_route
 from utils.gmaps_link import generate_gmaps_route_url
 from utils.gpx_utils import create_gpx_file
-from utils.elevation import add_elevations_to_coords
 
 
-def haversine_distance(coord1, coord2):
-    """Return distance in meters between two (lat, lon) coordinates."""
-    R = 6371000
-    lat1, lon1 = map(math.radians, coord1)
-    lat2, lon2 = map(math.radians, coord2)
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+def generate_loop_route_from_single_waypoint(
+    waypoint: Tuple[float, float],
+    profile: str,
+    target_distance_m: float,
+    host: str = "http://localhost:8989",
+    threshold: float = 500
+) -> Optional[Dict[str, Any]]:
+    """(Same as before – unchanged)"""
+    start_lat, start_lon = waypoint
+    stage_distance = target_distance_m / 3
+
+    print(f"\n[Loop Route] Generating looped route for '{profile}' | "
+          f"Target={target_distance_m:.0f} m | Stage={stage_distance:.0f} m")
+
+    df1 = fetch_graphhopper_spt(profile, start_lat, start_lon,
+                                distance_limit=int(stage_distance + threshold),
+                                host=host)
+    if df1.empty:
+        print("No SPT data from start point.")
+        return None
+
+    df1_ring = df1[(df1["distance"] >= stage_distance - threshold) &
+                   (df1["distance"] <= stage_distance + threshold)]
+    if df1_ring.empty:
+        print("No ring points found at target distance from start.")
+        return None
+
+    first_random_point = df1_ring.sample(1).iloc[0]
+    p1_lat, p1_lon = first_random_point["latitude"], first_random_point["longitude"]
+    print(f"Selected first intermediate point near ({p1_lat:.5f}, {p1_lon:.5f})")
+
+    df2 = fetch_graphhopper_spt(profile, p1_lat, p1_lon,
+                                distance_limit=int(stage_distance + threshold),
+                                host=host)
+    if df2.empty:
+        print("No SPT data from intermediate point.")
+        return None
+
+    df2_ring = df2[(df2["distance"] >= stage_distance - threshold) &
+                   (df2["distance"] <= stage_distance + threshold)]
+    if df2_ring.empty:
+        print("No ring points found at target distance from intermediate point.")
+        return None
+
+    print("Finding intersection of SPT rings (exact coordinate match)...")
+    common_points = pd.merge(df1_ring, df2_ring, on=["longitude", "latitude"])
+    if common_points.empty:
+        print("No common coordinates found between SPT rings.")
+        return None
+
+    chosen_match = common_points.sample(1).iloc[0]
+    p2_lat, p2_lon = chosen_match["latitude"], chosen_match["longitude"]
+    print(f"Selected intersection point at ({p2_lat:.5f}, {p2_lon:.5f})")
+
+    points = [
+        (start_lat, start_lon),
+        (p1_lat, p1_lon),
+        (p2_lat, p2_lon),
+        (start_lat, start_lon)
+    ]
+
+    route_data = fetch_graphhopper_route(profile, points=points, host=host)
+    if not route_data:
+        print("Failed to generate route from selected points.")
+        return None
+
+    distance_m = route_data["distance"]
+    duration_s = route_data["time"] / 1000
+    elevation_gain = route_data["ascend"]
+    elevation_loss = route_data["descend"]
+    coordinates = route_data["coordinates"]
+
+    route_coords_latlon = [(lat, lon, ele) for lon, lat, ele in coordinates]
+    gpx_file_url = create_gpx_file(route_coords_latlon)
+    gmaps_url = generate_gmaps_route_url(points, route_coords_latlon, profile=profile)
+
+    return {
+        "route": coordinates,
+        "distance_m": distance_m,
+        "duration_s": duration_s,
+        "elevation_gain_m": elevation_gain,
+        "elevation_loss_m": elevation_loss,
+        "gpx_file_url": gpx_file_url,
+        "gmaps_url": gmaps_url,
+        "network_type": profile,
+    }
 
 
-def generate_route_api(
-        start_end_lon_lat: Tuple[float, float],
-        waypoints: List[Tuple[float, float]],
-        target_distance_m: float,
-        target_elevation_m: float,
-        profile: str,
-) -> Dict[str, Any]:
+def generate_multi_waypoint_route(
+    waypoints: List[Tuple[float, float]],
+    profile: str,
+    target_distance_m: float,
+    loop: bool,
+    host: str,
+    threshold: float = 500
+) -> Optional[Dict[str, Any]]:
     """
-    Generates a looped route based on inputs. Returns coordinates, distance, elevation, and Google Maps URL.
+    Generates a route passing through multiple waypoints in order.
+    Scales total distance to approximate target using SPT rings for intermediate adjustments.
     """
 
-    # -------------------------------
-    # Configuration
-    # -------------------------------
-    VALHALLA_URL = "http://localhost:8002"
-    client = Valhalla(base_url=VALHALLA_URL)
+    if loop and waypoints[0] != waypoints[-1]:
+        waypoints = waypoints + [waypoints[0]]
 
-    # -------------------------------
-    # Helper: fetch iso-distance polygon
-    # -------------------------------
-    def get_isodistance(center, distance_m):
-        iso = client.isochrones(
-            locations=center,
-            profile=profile,
-            intervals=[distance_m],
-            interval_type="distance",
-            polygons=True,
-        )
-        return Polygon(iso[0].geometry[0])
+    # --- Compute base stage routes between consecutive waypoints ---
+    stage_results = []
+    total_distance = 0.0
 
-    # ==================================================================
-    # CASE 1: No waypoints → simple circular route
-    # ==================================================================
-    if not waypoints or len(waypoints) == 0:
-        iso_distance = target_distance_m / 3  # meters
+    for i in range(len(waypoints) - 1):
+        w1, w2 = waypoints[i], waypoints[i + 1]
 
-        # Iso-distance from start
-        poly_start = get_isodistance(start_end_lon_lat, iso_distance)
-        boundary_start = poly_start.boundary
+        route = fetch_graphhopper_route(profile, points=[w1, w2], host=host)
+        if not route:
+            print(f"Failed to compute base route between {w1} and {w2}")
+            return None
 
-        # Randomly pick a point on boundary
-        coords = list(boundary_start.coords)
-        rand_coord = random.choice(coords)
-        rand_point = Point(rand_coord)
+        dist = route["distance"]
+        total_distance += dist
+        stage_results.append({
+            "start": w1, "end": w2,
+            "distance": dist,
+            "route": route
+        })
 
-        # Iso-distance from that random point
-        poly_second = get_isodistance([rand_point.x, rand_point.y], iso_distance)
-        boundary_second = poly_second.boundary
-
-        # Intersection
-        raw_intersection = boundary_start.intersection(boundary_second)
-        points = []
-        if not raw_intersection.is_empty:
-            for geom in getattr(raw_intersection, 'geoms', [raw_intersection]):
-                if geom.geom_type == "Point":
-                    points.append(geom)
-                elif geom.geom_type == "LineString":
-                    points.extend([Point(geom.coords[0]), Point(geom.coords[-1])])
-        intersection_points = MultiPoint(points)
-        if len(intersection_points.geoms) == 0:
-            raise ValueError("No intersection found — try different parameters.")
-        intersection_point = random.choice(intersection_points.geoms)
-
-        # Route through: start → rand → intersection → start
-        valhalla_route = client.directions(
-            locations=[
-                start_end_lon_lat,
-                [rand_point.x, rand_point.y],
-                [intersection_point.x, intersection_point.y],
-                start_end_lon_lat,
-            ],
-            profile=profile,
-            units="km",
-        )
-
-        # Valhalla gives (lon, lat) → convert to (lat, lon)
-        route_coords = [(lat, lon) for lon, lat in valhalla_route.geometry]
-
-        route_url = generate_gmaps_route_url(route_coords, mode=profile)
-
-        # Elevations + GPX
-        route_with_elev = add_elevations_to_coords(route_coords)
-        gpx_path = create_gpx_file(route_with_elev)
-        gpx_file_url = f"/gpx/{os.path.basename(gpx_path)}"
+    # --- Compare with target distance ---
+    if total_distance >= target_distance_m:
+        full_coords = [coord for s in stage_results for coord in s["route"]["coordinates"]]
+        route_coords_latlon = [(lat, lon, ele) for lon, lat, ele in full_coords]
+        gpx_file_url = create_gpx_file(route_coords_latlon)
+        gmaps_url = generate_gmaps_route_url(waypoints, route_coords_latlon, profile=profile)
 
         return {
-            "route": route_with_elev,
-            "distance_m": valhalla_route.distance,
-            "duration_s": valhalla_route.duration,
-            "elevation_m": target_elevation_m,
-            "google_maps_url": route_url,
+            "route": full_coords,
+            "distance_m": total_distance,
+            "duration_s": sum(s["route"]["time"] for s in stage_results) / 1000,
+            "elevation_gain_m": sum(s["route"]["ascend"] for s in stage_results),
+            "elevation_loss_m": sum(s["route"]["descend"] for s in stage_results),
             "gpx_file_url": gpx_file_url,
-            "metadata": {
-                "num_waypoints": 0,
-                "network_type": profile,
-            },
+            "gmaps_url": gmaps_url,
+            "network_type": profile,
         }
 
-    # ==================================================================
-    # CASE 2: Waypoints provided → staged intersection logic
-    # ==================================================================
+    # --- Scale distances ---
+    multiplier = target_distance_m / total_distance
+
+    # --- For each stage, find SPT-based intermediate point ---
+    new_points = [waypoints[0]]
+
+    for i in range(len(waypoints) - 1):
+        w1_lat, w1_lon = waypoints[i]
+        w2_lat, w2_lon = waypoints[i + 1]
+        stage_target = stage_results[i]["distance"] * multiplier
+        half_stage = stage_target / 2
+
+        df1 = fetch_graphhopper_spt(profile, w1_lat, w1_lon,
+                                    distance_limit=int(half_stage + threshold),
+                                    host=host)
+        df2 = fetch_graphhopper_spt(profile, w2_lat, w2_lon,
+                                    distance_limit=int(half_stage + threshold),
+                                    host=host)
+        if df1.empty or df2.empty:
+            print("One of the SPTs is empty, skipping stage.")
+            continue
+
+        df1_ring = df1[(df1["distance"] >= half_stage - threshold) &
+                       (df1["distance"] <= half_stage + threshold)]
+        df2_ring = df2[(df2["distance"] >= half_stage - threshold) &
+                       (df2["distance"] <= half_stage + threshold)]
+
+        common = pd.merge(df1_ring, df2_ring, on=["longitude", "latitude"])
+        if common.empty:
+            print("No intersection found, skipping intermediate point.")
+            continue
+
+        chosen = common.sample(1).iloc[0]
+        lat_i, lon_i = chosen["latitude"], chosen["longitude"]
+        new_points.append((lat_i, lon_i))
+
+        new_points.append(waypoints[i + 1])
+
+    # --- Generate final route through all points ---
+    route_data = fetch_graphhopper_route(profile, points=new_points, host=host)
+    if not route_data:
+        print("Failed to generate final multi-waypoint route.")
+        return None
+
+    coords = route_data["coordinates"]
+    route_coords_latlon = [(lat, lon, ele) for lon, lat, ele in coords]
+    gpx_file_url = create_gpx_file(route_coords_latlon)
+    gmaps_url = generate_gmaps_route_url(waypoints, route_coords_latlon, profile=profile)
+
+    return {
+        "route": coords,
+        "distance_m": route_data["distance"],
+        "duration_s": route_data["time"] / 1000,
+        "elevation_gain_m": route_data["ascend"],
+        "elevation_loss_m": route_data["descend"],
+        "gpx_file_url": gpx_file_url,
+        "gmaps_url": gmaps_url,
+        "network_type": profile,
+    }
+
+
+def generate_custom_route(
+    waypoints: List[Tuple[float, float]],
+    profile: str,
+    target_distance_m: float,
+    loop: bool = True,
+    host: str = "http://localhost:8989"
+) -> Optional[Dict[str, Any]]:
+    """Master entry point for route generation."""
+    if not waypoints:
+        raise ValueError("At least one waypoint is required.")
+
+    if len(waypoints) == 1:
+        return generate_loop_route_from_single_waypoint(
+            waypoint=waypoints[0],
+            profile=profile,
+            target_distance_m=target_distance_m,
+            host=host
+        )
     else:
-        # Build full sequence including start and return
-        all_points = [start_end_lon_lat] + waypoints + [start_end_lon_lat]
-
-        # Compute leg distances and proportions
-        leg_distances = [
-            haversine_distance(all_points[i], all_points[i + 1])
-            for i in range(len(all_points) - 1)
-        ]
-        total_leg_distance = sum(leg_distances)
-        proportions = [d / total_leg_distance for d in leg_distances]
-        target_leg_distances = [target_distance_m * p for p in proportions]
-
-        intersection_coords = []
-
-        # For each leg between waypoints, find intersection or midpoint fallback
-        for i in range(len(leg_distances)):
-            pt1 = all_points[i]
-            pt2 = all_points[i + 1]
-            stage_iso = target_leg_distances[i] / 2
-
-            poly1 = get_isodistance(pt1, stage_iso)
-            poly2 = get_isodistance(pt2, stage_iso)
-
-            raw_intersection = poly1.boundary.intersection(poly2.boundary)
-            points = []
-            if not raw_intersection.is_empty:
-                for geom in getattr(raw_intersection, 'geoms', [raw_intersection]):
-                    if geom.geom_type == "Point":
-                        points.append(geom)
-                    elif geom.geom_type == "LineString":
-                        points.extend([Point(geom.coords[0]), Point(geom.coords[-1])])
-            intersection_points = MultiPoint(points)
-            if len(intersection_points.geoms) == 0:
-                # fallback: use midpoint
-                print(f"No intersection for leg {i}, using midpoint.")
-                midpoint = Point(
-                    (pt1[0] + pt2[0]) / 2,
-                    (pt1[1] + pt2[1]) / 2,
-                )
-                intersection_coords.append(midpoint)
-            else:
-                intersection_coords.append(random.choice(intersection_points.geoms))
-
-        # Build ordered coordinate list for route
-        route_sequence = [start_end_lon_lat]
-        for i, wp in enumerate(waypoints):
-            inter = intersection_coords[i]
-            route_sequence.append([inter.x, inter.y])
-            route_sequence.append(wp)
-        # Final intersection before returning
-        route_sequence.append([intersection_coords[-1].x, intersection_coords[-1].y])
-        route_sequence.append(start_end_lon_lat)
-
-        # Fetch route
-        valhalla_route = client.directions(
-            locations=route_sequence,
+        return generate_multi_waypoint_route(
+            waypoints=waypoints,
             profile=profile,
-            units="km",
-            preference="shortest",
+            target_distance_m=target_distance_m,
+            loop=loop,
+            host=host
         )
-
-        # Convert Valhalla output from (lon, lat) to (lat, lon)
-        route_coords = [(lat, lon) for lon, lat in valhalla_route.geometry]
-        route_url = generate_gmaps_route_url(route_coords, waypoints, mode=profile)
-
-        route_with_elev = add_elevations_to_coords(route_coords)
-        gpx_path = create_gpx_file(route_with_elev)
-        gpx_file_url = f"/gpx/{os.path.basename(gpx_path)}"
-
-        return {
-            "route": route_with_elev,
-            "distance_m": valhalla_route.distance,
-            "duration_s": valhalla_route.duration,
-            "elevation_m": target_elevation_m,
-            "google_maps_url": route_url,
-            "gpx_file_url": gpx_file_url,
-            "metadata": {
-                "num_waypoints": len(waypoints),
-                "network_type": profile,
-            },
-        }

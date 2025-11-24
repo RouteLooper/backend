@@ -1,29 +1,5 @@
-# Valhalla self-host instructions
-
-## Generate config file
-docker run --rm -v C:\Users\james\Documents\Python\route-generator\data:/data ghcr.io/valhalla/valhalla:latest valhalla_build_config > C:\Users\james\Documents\Python\route-generator\data\valhalla.json
-
-## Build tiles
-docker run -it --rm -v C:\Users\james\Documents\Python\route-generator\data:/data ghcr.io/valhalla/valhalla:latest valhalla_build_tiles -c /data/valhalla.json /data/gloucestershire-251104.osm.pbf
-
-## Start the service
-docker run -d -v C:\Users\james\Documents\Python\route-generator\data:/data -p 8002:8002 ghcr.io/valhalla/valhalla:latest valhalla_service /data/valhalla.json 1
-
-# Running server
-
-## Start the server
-uvicorn main:app --reload
-
-## /generate-route example input
-{
-  "start_end_lat_lon": [51.908571, -2.086392],
-  "waypoints": [[51.931178, -2.069347], [51.913158, -2.040591]],
-  "target_distance_m": 5000,
-  "target_elevation_m": 200,
-  "profile": "bicycle" # Any of: auto, bicycle, bus, bikeshare, truck, taxi, motor_scooter, motorcycle, multimodal, pedestrian
-}
-
-
+# Start API Command 
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload   
 
 # Graphhopper self-host instructions
 
@@ -44,4 +20,5 @@ check hosting:
   0.0.0.0 - local network
  localhost - within container
 
-spt command: http://localhost:8989/spt?profile=car&point=51.8940,-2.0786&distance_limit=30000
+spt : http://localhost:8989/spt?profile=car&point=51.8940,-2.0786&distance_limit=30000
+routing : http://localhost:8989/route?point=51.8940,-2.0786&point=51.9040,-2.0796&profile=car
