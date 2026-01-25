@@ -1,6 +1,5 @@
-cache/
-data/
 .idea/
 __pycache__/
-gpx/
-graphhopper-local/
+fastapi-app/gpx
+graphhopperdata/osm
+graphhopperdata/graph-cache
