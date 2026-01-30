@@ -16,7 +16,7 @@ Each generated route is returned as:
 - A downloadable GPX file
 - A shareable Google Maps navigation link
 
-The backend is built using FastAPI, with GraphHopper used as the routing engine. The service is currently deployed on Microsoft Azure.
+The backend is built using [FastAPI](https://github.com/fastapi/fastapi), with [GraphHopper](https://github.com/graphhopper/graphhopper) used as the routing engine. The service is currently deployed on Microsoft Azure.
 
 ## Architecture
 
