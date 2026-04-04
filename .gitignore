@@ -3,3 +3,4 @@ __pycache__/
 fastapi-app/gpx
 graphhopperdata/osm
 graphhopperdata/graph-cache
+AI-route-gen/

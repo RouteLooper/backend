@@ -2,6 +2,7 @@ from typing import List, Tuple
 
 graphhopper_to_gmaps = {
     "car": "driving",
+    "car_motorway": "driving",
     "bike": "bicycling",
     "foot": "walking",
 }
@@ -27,7 +28,7 @@ def generate_gmaps_route_url(
     if waypoints_param:
         url += f"&waypoints={waypoints_param}"
     url += f"&travelmode={gmaps_mode}&dir_action=navigate"
-    if gmaps_mode != "driving":
+    if profile != "car_motorway":
         url += "&avoid=highways"
 
     return url

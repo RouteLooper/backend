@@ -91,6 +91,7 @@ class RouteRequest(BaseModel):
     profile: Literal["car", "bike", "foot"] = Field(..., description="Routing profile")
     target_distance_m: float = Field(..., description="Target distance in meters")
     loop: bool = Field(True, description="Whether the route should be a loop returning to start")
+    allowMotorways: bool = Field(False, description="Allow motorway routing (car only)")
 
 
 class RouteResponse(BaseModel):
@@ -122,19 +123,38 @@ async def verify_api_key(x_api_key: str = Header(None)):
 # --- Endpoints ---
 @app.post("/generate-route", response_model=RouteResponse)
 async def generate_route_endpoint(req: RouteRequest, api_key: str = Depends(verify_api_key)):
-    print("TEST")
     try:
+        profile = req.profile
+
+        # --- Validate allowMotorways usage ---
+        if req.allowMotorways and profile != "car":
+            raise HTTPException(
+                status_code=400,
+                detail="allowMotorways can only be used with 'car' profile"
+            )
+
+        # --- Profile mapping logic ---
+        if profile == "car" and req.allowMotorways:
+            gh_profile = "car_motorway"
+        else:
+            gh_profile = profile
+
         result = generate_custom_route(
             waypoints=req.waypoints,
-            profile=req.profile,
+            profile=gh_profile,
             target_distance_m=req.target_distance_m,
             loop=req.loop,
             host=GRAPHHOPPER_HOST,
         )
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Route generation failed: {e}")
+
     if not isinstance(result, dict) or "route" not in result:
         raise HTTPException(status_code=500, detail="Route generator returned invalid result format")
+
     return {
         "route": [(lat, lon, ele) for lat, lon, ele in result["route"]],
         "distance_m": result["distance_m"],
