@@ -51,7 +51,8 @@ Requires an X-API-Key header. Requests are rate-limited per API key.
   "waypoints": [[51.5074, -0.1278]],
   "profile": "foot",
   "target_distance_m": 5000,
-  "loop": true
+  "loop": true,
+  "allowMotorways": false
 }
 ```
 #### Parameters
@@ -59,6 +60,7 @@ Requires an X-API-Key header. Requests are rate-limited per API key.
 - profile – Routing mode: car, bike, or foot
 - target_distance_m – Target route length in metres
 - loop – Whether the route should return to the starting point
+- allowMotorways - If true (and profile is 'car'), then use motorways. Otherwise, avoid motorways.
 
 ### Response
 ```json
